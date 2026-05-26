@@ -89,7 +89,7 @@ async function connectToWA() {
 
       const up = `KAWSHALA-MD connected ✅\n\nPREFIX: ${prefix}`;
       await kawshala.sendMessage(ownerNumber[0] + "@s.whatsapp.net", {
-        image: { url: `https://github.com/kawshala-MD/kawshala-MD/blob/main/images/kawshala-MD.png?raw=true` },
+        image: { url: `https://github.com/kawwagaming02/kawshala-md/blob/main/images/KAWSHALA-MD%20(1).jpg?raw=true` },
         caption: up
       });
 
