@@ -4,14 +4,14 @@ const getFbVideoInfo = require("@xaviabot/fb-downloader");
 cmd(
   {
     pattern: "fb",
-    alias: ["facebook"],
+    alias: ["facebook", "fbd"],
     react: "✅",
-    desc: "Download Facebook Video",
+    desc: "Download Facebook Video🌏",
     category: "download",
     filename: __filename,
   },
   async (
-    danuwa,
+    kawwa,
     mek,
     m,
     {
@@ -46,7 +46,7 @@ cmd(
       if (!fbRegex.test(q))
         return reply("*Invalid Facebook URL! Please check and try again.* ☹️");
 
-      reply("*Downloading your video...* ❤️");
+      reply("*Downloading your video...* ❤️⏳️");
 
       const result = await getFbVideoInfo(q);
       if (!result || (!result.sd && !result.hd)) {
@@ -63,18 +63,18 @@ Your fb video
 👻 *Quality*: ${qualityText}
 `;
 
-      await danuwa.sendMessage(
+      await kawwa.sendMessage(
         from,
         {
           image: {
-            url: "https://github.com/DANUWA-MD/DANUWA-MD/blob/main/images/fbdownloader.png?raw=true",
+            url: "https://github.com/kawwagaming02/kawshala-md/blob/main/images/KAWSHALA-MD%20(1).jpg?raw=true",
           },
           caption: desc,
         },
         { quoted: mek }
       );
 
-      await danuwa.sendMessage(
+      await kawwa.sendMessage(
         from,
         {
           video: { url: bestQualityUrl },
@@ -83,7 +83,7 @@ Your fb video
         { quoted: mek }
       );
 
-      return reply("Thank you for using DANUWA-MD");
+      return reply("Thank you for using KAWSHALA-MD");
     } catch (e) {
       console.error(e);
       reply(`*Error:* ${e.message || e}`);
