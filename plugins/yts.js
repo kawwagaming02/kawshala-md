@@ -6,12 +6,12 @@ cmd(
     pattern: "yts",
     alias: ["yts", "youtubesearch"],
     react: "🔎",
-    desc: "Search YouTube videos",
+    desc: "😇Search YouTube videos😇",
     category: "search",
     filename: __filename,
   },
   async (
-    danuwa,
+    kawwa,
     mek,
     m,
     {
@@ -32,23 +32,23 @@ cmd(
         return reply("*No results found on YouTube.* ☹️");
       }
 
-      const results = search.videos.slice(0, 10); 
+      const results = search.videos.slice(0, 5); 
       let formattedResults = results.map((v, i) => (
         `🎬 *${i + 1}. ${v.title}*\n📅 ${v.ago} | ⌛ ${v.timestamp} | 👁️ ${v.views.toLocaleString()} views\n🔗 ${v.url}`
       )).join("\n\n");
 
       const caption = `  
-Your youtube search results
+*_Your youtube search results💯
 ─────────────────────────
 🔎 *Query*: ${q}
 ${formattedResults}
    `;
 
-      await danuwa.sendMessage(
+      await kawwa.sendMessage(
         from,
         {
           image: {
-            url: "https://github.com/DANUWA-MD/DANUWA-MD/blob/main/images/yts.png?raw=true",
+            url: "https://github.com/kawwagaming02/kawshala-md/blob/main/images/KAWSHALA-MD%20(1).jpg?raw=true",
           },
           caption,
         },
