@@ -11,7 +11,7 @@ cmd(
     filename: __filename,
   },
   async (
-    danuwa,
+    kawwa,
     mek,
     m,
     {
@@ -53,9 +53,11 @@ Song downloader
 📅 *Uploaded:* ${data.ago}
 👀 *Views:* ${data.views.toLocaleString()}
 🔗 *Watch Here:* ${data.url}
+
+powered by kawshala-md
 `;
 
-      await danuwa.sendMessage(
+      await kawwa.sendMessage(
         from,
         { image: { url: data.thumbnail }, caption: desc },
         { quoted: mek }
@@ -74,7 +76,7 @@ Song downloader
         return reply("⏳ *Sorry, audio files longer than 30 minutes are not supported.*");
       }
 
-      await danuwa.sendMessage(
+      await kawwa.sendMessage(
         from,
         {
           audio: { url: songData.download.url },
@@ -83,7 +85,7 @@ Song downloader
         { quoted: mek }
       );
 
-      await danuwa.sendMessage(
+      await kawwa.sendMessage(
         from,
         {
           document: { url: songData.download.url },
