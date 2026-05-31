@@ -1,4 +1,4 @@
-const { cmd } = require("../command");
+const { cmd, commands } = require("../command");
 
 cmd(
   {
@@ -7,32 +7,38 @@ cmd(
     category: "main",
     filename: __filename,
   },
-  async (kawshala, mek, m, { reply }) => {
+  async (
+    kawshala,
+    mek,
+    m,
+    {
+      from,
+      reply
+    }
+  ) => {
     try {
-      let menuText = `╭━〔 KAWSHALA-MD 〕━··๏
-┃ 👑 *𝐎𝐰𝐧𝐞𝐫 :* kawshala-md
-┃ ⚙️ *𝐌𝐨𝐝𝐞 :* PUBLIC
-┃ 🔣 *𝐏𝐫𝐞𝐟𝐢𝐱 :* .
-┃ 📚 *𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬 :* 115
-╰━━━━━━━━━━━━━━┈⊷
-╭━〔 *𝐒𝐘𝐒𝐓𝐄𝐌 𝐒𝐓𝐀𝐓𝐒* 〕━··๏
-┃ ⏱ *𝐔𝐩𝐭𝐢𝐦𝐞 :* 59 minutes, 
-┃ 🚀 *𝐋𝐚𝐭𝐞𝐧𝐜𝐲 :* 440ms
-┃ 💻 *𝐏𝐥𝐚𝐭𝐟𝐨𝐫𝐦 :* Heroku
-┃ 🤖 *𝐕𝐞𝐫𝐬𝐢𝐨𝐧 :* 1.0.2
-╰━━━━━━━━━━━━━━┈⊷
+      const categories = {};
 
-╭━━〔 📜 𝐌𝐄𝐍𝐔 𝐋𝐈𝐒𝐓 〕━━┈⊷
-┃ 1️⃣  DOWNLOAD (29)
-┃ 2️⃣  LOGO (27)
-┃ 3️⃣  MAIN (19)
-┃ 4️⃣  MEDIA (7)
-┃ 5️⃣  TOOLS (32)
-╰━━━━━━━━━━━━━━┈⊷
+      for (let cmdName in commands) {
+        const cmdData = commands[cmdName];
+        const cat = cmdData.category?.toLowerCase() || "other";
+        if (!categories[cat]) categories[cat] = [];
+        categories[cat].push({
+          pattern: cmdData.pattern,
+          desc: cmdData.desc || "No description"
+        });
+      }
 
-_💡 Reply with number to select._`;
+      let menuText = "📋 *Available Commands:*\n";
 
-      await reply(menuText);
+      for (const [cat, cmds] of Object.entries(categories)) {
+        menuText += `\n📂 *${cat.toUpperCase()}*\n`;
+        cmds.forEach(c => {
+          menuText += `- .${c.pattern} : ${c.desc}\n`;
+        });
+      }
+
+      await reply(menuText.trim());
     } catch (err) {
       console.error(err);
       reply("❌ Error generating menu.");
