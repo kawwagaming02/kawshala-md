@@ -4,7 +4,7 @@ const axios = require("axios");
 
 cmd(
   {
-    pattern: "wall",
+    pattern: "wallp",
     alias: ["wallpaper"],
     react: "🖼️",
     desc: "🖼️ HD Wallpaper Downloader\nSearch Wallhaven.cc for gorgeous 1080p, 1440p & 4K wallpapers.\nUsage: .wall <keyword>",
