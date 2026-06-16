@@ -3,10 +3,14 @@ const { searchCineSubz, scrapeCineSubz, scrapeCineSubzServerLink } = require('ci
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream');
+const { promisify } = require('util');
+const streamPipeline = promisify(pipeline);
 
-// Session storage
+// ============ SESSION STORAGE ============
 const pendingSearch = {};
-const pendingDownload = {};
+const pendingQuality = {};
+const downloadProgress = {};
 
 // ============ DOWNLOAD AND SEND MOVIE FUNCTION ============
 async function downloadAndSendMovie(client, from, movieUrl, quality, m) {
@@ -18,8 +22,10 @@ async function downloadAndSendMovie(client, from, movieUrl, quality, m) {
             return { success: false, message: "No download links found" };
         }
 
-        // Step 2: Find the requested quality
+        // Step 2: Find requested quality
         let selectedLink = null;
+        
+        // Try exact match
         for (const link of details.downloadLinks) {
             if (link.quality && link.quality.toLowerCase().includes(quality.toLowerCase())) {
                 selectedLink = link;
@@ -27,9 +33,9 @@ async function downloadAndSendMovie(client, from, movieUrl, quality, m) {
             }
         }
 
-        // If exact quality not found, get best available
+        // If not found, try priority
         if (!selectedLink) {
-            const priority = ['1080p', '720p', '480p'];
+            const priority = ['1080p', '720p', '480p', '360p'];
             for (const q of priority) {
                 for (const link of details.downloadLinks) {
                     if (link.quality && link.quality.toLowerCase().includes(q)) {
@@ -41,137 +47,203 @@ async function downloadAndSendMovie(client, from, movieUrl, quality, m) {
             }
         }
 
-        // If still no link, take the first one
+        // If still no link, take first
         if (!selectedLink) {
             selectedLink = details.downloadLinks[0];
         }
 
-        // Step 3: Get direct download URL
-        let downloadUrl = selectedLink.url || selectedLink.link;
+        // Step 3: Get download URL
+        let downloadUrl = selectedLink.url || selectedLink.link || selectedLink.href;
         
-        // Get direct link if it's a server link
-        if (downloadUrl && (downloadUrl.includes('/go/') || downloadUrl.includes('/server/'))) {
+        if (!downloadUrl || downloadUrl === 'undefined') {
+            return { success: false, message: "Could not get download URL" };
+        }
+
+        // Step 4: Extract direct link if needed
+        if (downloadUrl.includes('/go/') || downloadUrl.includes('/server/') || downloadUrl.includes('/link/')) {
             try {
                 const directLink = await scrapeCineSubzServerLink(downloadUrl);
-                if (directLink) {
+                if (directLink && directLink.startsWith('http')) {
                     downloadUrl = directLink;
                 }
             } catch (e) {
-                console.log("Could not get direct link, using original");
+                console.log('⚠️ Could not extract direct link, using original');
             }
         }
 
-        // Step 4: Download the file
-        const fileName = `${details.title || 'movie'} - ${selectedLink.quality || 'HD'}.mp4`.replace(/[^\w\s.-]/gi, '');
-        const filePath = path.join(__dirname, 'temp', fileName);
+        // Step 5: Prepare file name and path
+        const cleanTitle = details.title || 'Movie';
+        const cleanQuality = selectedLink.quality || 'HD';
+        const fileName = `${cleanTitle} - ${cleanQuality}.mp4`.replace(/[^\w\s.-]/gi, '');
         
-        // Create temp directory if not exists
-        if (!fs.existsSync(path.join(__dirname, 'temp'))) {
-            fs.mkdirSync(path.join(__dirname, 'temp'));
+        const tempDir = path.join(__dirname, 'temp');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
         }
+        
+        const filePath = path.join(tempDir, fileName);
 
-        // Send progress message
+        // Step 6: Send progress message
         await client.sendMessage(from, {
-            text: `📥 *Downloading ${details.title}*\n📊 Quality: ${selectedLink.quality || 'HD'}\n💾 Size: ${selectedLink.size || 'Unknown'}\n\n⏳ Please wait...`
+            text: `📥 *Downloading Movie*\n━━━━━━━━━━━━━━━━\n🎬 ${cleanTitle}\n📊 Quality: ${cleanQuality}\n💾 Size: ${selectedLink.size || 'Unknown'}\n\n⏳ Downloading... Please wait.`
         }, { quoted: m });
 
-        // Download the file
+        // Step 7: Download file with progress
         const response = await axios({
             method: 'GET',
             url: downloadUrl,
             responseType: 'stream',
-            timeout: 600000, // 10 minutes timeout
+            timeout: 600000, // 10 minutes
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Referer': 'https://cinesubz.com/'
             }
         });
 
+        // Check content length
+        const contentLength = response.headers['content-length'];
+        let totalSize = contentLength ? parseInt(contentLength) : 0;
+        let downloadedSize = 0;
+        let lastProgressUpdate = 0;
+
+        // Download with progress tracking
         const writer = fs.createWriteStream(filePath);
-        response.data.pipe(writer);
-
-        return new Promise((resolve, reject) => {
-            writer.on('finish', async () => {
-                try {
-                    // Step 5: Send the file to WhatsApp
-                    await client.sendMessage(from, {
-                        document: {
-                            url: filePath
-                        },
-                        mimetype: "video/mp4",
-                        fileName: fileName,
-                        caption: `🎬 *${details.title}*\n📊 ${selectedLink.quality || 'HD'}\n💾 ${selectedLink.size || 'N/A'}\n\n*Enjoy the movie! 🍿*`
-                    }, { quoted: m });
-
-                    // Step 6: Clean up temp file
-                    fs.unlinkSync(filePath);
-                    
-                    resolve({ success: true, message: "Movie sent successfully!" });
-                } catch (error) {
-                    reject(error);
-                }
-            });
-
-            writer.on('error', (error) => {
-                reject(error);
-            });
+        
+        response.data.on('data', (chunk) => {
+            downloadedSize += chunk.length;
+            
+            // Update progress every 5%
+            const progress = totalSize ? (downloadedSize / totalSize) * 100 : 0;
+            if (progress - lastProgressUpdate >= 5) {
+                lastProgressUpdate = progress;
+                const downloadedMB = (downloadedSize / (1024 * 1024)).toFixed(1);
+                const totalMB = (totalSize / (1024 * 1024)).toFixed(1);
+                console.log(`📥 Download progress: ${progress.toFixed(0)}% (${downloadedMB}MB / ${totalMB}MB)`);
+            }
         });
+
+        await streamPipeline(response.data, writer);
+
+        // Step 8: Check file size
+        const stats = fs.statSync(filePath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+        
+        console.log(`✅ Download complete: ${fileSizeMB.toFixed(2)} MB`);
+
+        // Step 9: Check if file is too large
+        if (fileSizeMB > 2000) {
+            fs.unlinkSync(filePath);
+            return { 
+                success: false, 
+                message: `File too large (${fileSizeMB.toFixed(2)} MB). WhatsApp limit is 2GB.` 
+            };
+        }
+
+        // Step 10: Send as document (like in your screenshot)
+        await client.sendMessage(from, {
+            document: {
+                url: filePath
+            },
+            mimetype: "video/mp4",
+            fileName: fileName,
+            caption: `🎬 *${cleanTitle}*\n📊 ${cleanQuality}\n💾 ${fileSizeMB.toFixed(2)} MB\n\n*Powered by KAWSHALA-MD*`
+        }, { quoted: m });
+
+        // Step 11: Clean up
+        fs.unlinkSync(filePath);
+        
+        return { 
+            success: true, 
+            message: "Movie sent successfully!",
+            fileSize: fileSizeMB.toFixed(2),
+            fileName: fileName
+        };
 
     } catch (error) {
         console.error("Download error:", error);
-        return { success: false, message: error.message || "Download failed" };
+        // Clean up on error
+        try {
+            const tempDir = path.join(__dirname, 'temp');
+            if (fs.existsSync(tempDir)) {
+                const files = fs.readdirSync(tempDir);
+                for (const file of files) {
+                    const filePath = path.join(tempDir, file);
+                    if (fs.statSync(filePath).isFile()) {
+                        fs.unlinkSync(filePath);
+                    }
+                }
+            }
+        } catch (e) {}
+        
+        return { 
+            success: false, 
+            message: error.message || "Download failed" 
+        };
     }
 }
 
 // ============ COMMAND: DOWNLOAD MOVIE ============
 cmd({
-    pattern: "d",
-    alias: ["download", "get", "dl"],
+    pattern: "download",
+    alias: ["dl", "get", "movie", "film"],
     react: "📥",
-    desc: "Download movie from CineSubz",
-    category: "download",
-    filename: __filename
+    desc: "Search and download movies from CineSubz",
+    category: "download"
 }, async (client, message, m, { from, q, sender, reply }) => {
     if (!q) {
-        return reply(`📥 *Movie Downloader*
-
-*Usage:*
-• d movie_name
-• download movie_name
-• dl movie_name
-
-*Examples:*
-• d captain america
-• download inception
-• dl avatar
-
-*You can also specify quality:*
-• d avatar 1080p
-• d inception 720p`);
+        return reply(`📥 *Movie Downloader*\n━━━━━━━━━━━━━━━━\n\n*Usage:*\n• download movie_name\n• dl movie_name\n• get movie_name\n\n*Examples:*\n• download harry potter\n• dl avatar\n• get captain america\n\n*Specify quality:*\n• download harry potter 720p\n• dl avatar 1080p`);
     }
 
     await client.sendMessage(from, { 
         react: { text: "⏳", key: m.key } 
     });
 
-    // Parse command: "d movie_name quality"
+    // Parse command: "download movie_name quality"
     const parts = q.trim().split(/\s+/);
-    const movieName = parts[0];
-    const quality = parts[1] || '1080p';
+    const movieName = parts.slice(0, parts.length - 1).join(' ');
+    const quality = parts[parts.length - 1].match(/^\d{3,4}p$/) ? parts[parts.length - 1] : '720p';
+    const searchQuery = movieName || q;
 
-    reply(`🔍 *Searching for "${movieName}"...*`);
+    reply(`🔍 *Searching for "${searchQuery}"...*`);
 
     try {
-        // Search for the movie
-        const results = await searchCineSubz(movieName);
+        const results = await searchCineSubz(searchQuery);
         
         if (!results || results.length === 0) {
-            return reply(`❌ *No movies found for "${movieName}"*`);
+            return reply(`❌ *No movies found for "${searchQuery}"*`);
         }
 
-        // Get the first result
+        // If multiple results, show selection
+        if (results.length > 1) {
+            pendingSearch[sender] = { 
+                results: results, 
+                quality: quality,
+                timestamp: Date.now() 
+            };
+
+            let msg = `🎬 *Search Results*\n━━━━━━━━━━━━━━━━\n\n`;
+            const displayCount = Math.min(8, results.length);
+            
+            for (let i = 0; i < displayCount; i++) {
+                const movie = results[i];
+                msg += `*${i+1}.* ${movie.title || 'N/A'}\n`;
+                msg += `   📊 ${movie.quality || 'N/A'}\n`;
+                msg += `   📝 ${movie.language || 'N/A'}\n\n`;
+            }
+            
+            msg += `━━━━━━━━━━━━━━━━\n`;
+            msg += `📌 *Reply with number (1-${displayCount})*\n`;
+            msg += `⏱️ *Expires in 5 minutes*`;
+
+            await client.sendMessage(from, { text: msg }, { quoted: m });
+            return;
+        }
+
+        // If only one result, download directly
         const movie = results[0];
-        
-        // Download and send
         const result = await downloadAndSendMovie(
             client, 
             from, 
@@ -181,79 +253,21 @@ cmd({
         );
 
         if (!result.success) {
-            reply(`❌ *Download failed:* ${result.message}`);
+            await client.sendMessage(from, {
+                text: `❌ *Download Failed*\n━━━━━━━━━━━━━━━━\n${result.message}`
+            }, { quoted: m });
         }
 
     } catch (error) {
-        console.error("Command error:", error);
+        console.error("Download error:", error);
         reply(`❌ *Error:* ${error.message || 'Unknown error'}`);
     }
 });
 
-// ============ COMMAND: DOWNLOAD WITH SELECTION ============
-cmd({
-    pattern: "ds",
-    alias: ["dselect", "dls"],
-    react: "🎬",
-    desc: "Search and select movie to download",
-    category: "download"
-}, async (client, message, m, { from, q, sender, reply }) => {
-    if (!q) {
-        return reply(`🎬 *Search and Download*
-
-*Usage:*
-• ds movie_name
-
-*Example:*
-• ds captain america`);
-    }
-
-    await client.sendMessage(from, { 
-        react: { text: "⏳", key: m.key } 
-    });
-
-    reply(`🔍 *Searching for "${q}"...*`);
-
-    try {
-        const results = await searchCineSubz(q);
-        
-        if (!results || results.length === 0) {
-            return reply(`❌ *No movies found for "${q}"*`);
-        }
-
-        // Store results
-        pendingSearch[sender] = { 
-            results: results, 
-            timestamp: Date.now(),
-            action: 'download'
-        };
-
-        let msg = `*🎬 Select a movie to download:*\n\n`;
-        const displayCount = Math.min(10, results.length);
-        
-        for (let i = 0; i < displayCount; i++) {
-            const movie = results[i];
-            msg += `*${i+1}.* ${movie.title || 'N/A'}\n`;
-            msg += `   📊 ${movie.quality || 'N/A'}\n`;
-            msg += `   📝 ${movie.language || 'N/A'}\n\n`;
-        }
-        
-        msg += `*📌 Type the number (1-${displayCount})*\n`;
-        msg += `⏱️ *Session expires in 5 minutes*`;
-
-        await client.sendMessage(from, { text: msg }, { quoted: m });
-
-    } catch (error) {
-        console.error("Search error:", error);
-        reply(`❌ *Error:* ${error.message || 'Unknown error'}`);
-    }
-});
-
-// ============ HANDLE MOVIE SELECTION FOR DOWNLOAD ============
+// ============ HANDLE SEARCH SELECTION ============
 cmd({
     filter: (text, { sender }) => {
         if (!pendingSearch[sender]) return false;
-        if (pendingSearch[sender].action !== 'download') return false;
         const num = parseInt(text.trim());
         return !isNaN(num) && num > 0 && num <= pendingSearch[sender].results.length;
     }
@@ -263,81 +277,84 @@ cmd({
     });
 
     const index = parseInt(body.trim()) - 1;
-    const selected = pendingSearch[sender].results[index];
-    
-    // Ask for quality
-    pendingDownload[sender] = {
-        movie: selected,
-        timestamp: Date.now()
-    };
+    const { results, quality } = pendingSearch[sender];
+    const selected = results[index];
 
-    let msg = `*🎬 ${selected.title}*\n\n`;
-    msg += `*Select quality:*\n`;
-    msg += `1. 1080p (Best)\n`;
-    msg += `2. 720p (Good)\n`;
-    msg += `3. 480p (Small)\n\n`;
-    msg += `*📌 Type the number (1-3)*`;
+    reply(`📥 *Downloading ${selected.title}...*`);
 
-    await client.sendMessage(from, { text: msg }, { quoted: m });
-});
-
-// ============ HANDLE QUALITY SELECTION ============
-cmd({
-    filter: (text, { sender }) => {
-        if (!pendingDownload[sender]) return false;
-        const num = parseInt(text.trim());
-        return !isNaN(num) && num >= 1 && num <= 3;
-    }
-}, async (client, message, m, { body, sender, reply, from }) => {
-    await client.sendMessage(from, { 
-        react: { text: "⏳", key: m.key } 
-    });
-
-    const qualities = ['1080p', '720p', '480p'];
-    const quality = qualities[parseInt(body.trim()) - 1];
-    const { movie } = pendingDownload[sender];
-
-    // Download and send
     const result = await downloadAndSendMovie(
         client, 
         from, 
-        movie.url || movie.movieUrl, 
+        selected.url || selected.movieUrl, 
         quality,
         m
     );
 
     if (!result.success) {
-        reply(`❌ *Download failed:* ${result.message}`);
+        await client.sendMessage(from, {
+            text: `❌ *Download Failed*\n━━━━━━━━━━━━━━━━\n${result.message}`
+        }, { quoted: m });
     }
 
-    delete pendingDownload[sender];
     delete pendingSearch[sender];
 });
 
-// ============ COMMAND: GET DOWNLOAD LINK ONLY ============
+// ============ COMMAND: DIRECT URL DOWNLOAD ============
 cmd({
-    pattern: "link",
-    alias: ["getlink", "gl"],
+    pattern: "durl",
+    alias: ["downloadurl", "dlurl"],
     react: "🔗",
-    desc: "Get movie download link only",
+    desc: "Download movie directly from URL",
     category: "download"
 }, async (client, message, m, { from, q, sender, reply }) => {
     if (!q) {
-        return reply(`🔗 *Get Download Link*
-
-*Usage:*
-• link movie_name
-• getlink movie_name
-
-*Example:*
-• link captain america`);
+        return reply(`🔗 *Direct URL Download*\n━━━━━━━━━━━━━━━━\n\n*Usage:*\n• durl movie_url\n• downloadurl movie_url\n\n*Example:*\n• durl https://cinesubz.com/movie/harry-potter-2001\n\n*Specify quality:*\n• durl url 720p`);
     }
 
     await client.sendMessage(from, { 
         react: { text: "⏳", key: m.key } 
     });
 
-    reply(`🔍 *Searching for "${q}"...*`);
+    const parts = q.trim().split(/\s+/);
+    const url = parts[0];
+    const quality = parts[1] || '720p';
+
+    if (!url.startsWith('http')) {
+        return reply(`❌ *Invalid URL!*`);
+    }
+
+    reply(`📥 *Downloading movie...*`);
+
+    const result = await downloadAndSendMovie(
+        client, 
+        from, 
+        url, 
+        quality,
+        m
+    );
+
+    if (!result.success) {
+        await client.sendMessage(from, {
+            text: `❌ *Download Failed*\n━━━━━━━━━━━━━━━━\n${result.message}`
+        }, { quoted: m });
+    }
+});
+
+// ============ COMMAND: GET MOVIE INFO ============
+cmd({
+    pattern: "info",
+    alias: ["details", "movieinfo"],
+    react: "ℹ️",
+    desc: "Get movie details and download links",
+    category: "download"
+}, async (client, message, m, { from, q, sender, reply }) => {
+    if (!q) {
+        return reply(`ℹ️ *Movie Info*\n━━━━━━━━━━━━━━━━\n\n*Usage:*\n• info movie_name\n• details movie_name\n\n*Example:*\n• info harry potter`);
+    }
+
+    await client.sendMessage(from, { 
+        react: { text: "⏳", key: m.key } 
+    });
 
     try {
         const results = await searchCineSubz(q);
@@ -349,79 +366,136 @@ cmd({
         const movie = results[0];
         const details = await scrapeCineSubz(movie.url || movie.movieUrl);
 
-        let msg = `🔗 *Download Links for ${details.title}*\n\n`;
+        let msg = `🎬 *${details.title || 'Movie'}*\n`;
+        msg += `━━━━━━━━━━━━━━━━\n`;
+        msg += `📅 Year: ${details.year || 'N/A'}\n`;
+        msg += `📝 Language: ${details.language || 'N/A'}\n`;
+        msg += `⭐ Rating: ${details.imdb || details.rating || 'N/A'}\n`;
+        
+        if (details.genres && details.genres.length > 0) {
+            msg += `🎭 Genres: ${details.genres.join(', ')}\n`;
+        }
+        
+        if (details.cast && details.cast.length > 0) {
+            msg += `👥 Cast: ${details.cast.slice(0, 5).join(', ')}${details.cast.length > 5 ? '...' : ''}\n`;
+        }
+        
+        if (details.description) {
+            msg += `\n📖 Description:\n${details.description.substring(0, 200)}...\n`;
+        }
+        
+        msg += `\n━━━━━━━━━━━━━━━━\n`;
         
         if (details.downloadLinks && details.downloadLinks.length > 0) {
-            details.downloadLinks.forEach((link, i) => {
+            msg += `📥 *Available Qualities:*\n`;
+            details.downloadLinks.slice(0, 5).forEach((link, i) => {
                 msg += `*${i+1}.* ${link.quality || 'N/A'} - ${link.size || 'N/A'}\n`;
-                msg += `   Server: ${link.server || 'Direct'}\n`;
-                msg += `   URL: ${link.url || link.link || 'N/A'}\n\n`;
             });
+            msg += `\n📌 *Type: download movie_name*`;
         } else {
-            msg += `*❌ No download links available*`;
+            msg += `❌ *No download links available*`;
+        }
+        
+        msg += `\n━━━━━━━━━━━━━━━━\n`;
+        msg += `© POWERED BY KAWSHALA-MD`;
+
+        if (details.thumbnail || details.poster) {
+            await client.sendMessage(from, {
+                image: { url: details.thumbnail || details.poster },
+                caption: msg
+            }, { quoted: m });
+        } else {
+            await client.sendMessage(from, { text: msg }, { quoted: m });
         }
 
-        await client.sendMessage(from, { text: msg }, { quoted: m });
-
     } catch (error) {
-        console.error("Link error:", error);
+        console.error("Info error:", error);
         reply(`❌ *Error:* ${error.message || 'Unknown error'}`);
     }
 });
 
-// ============ COMMAND: DIRECT DOWNLOAD BY URL ============
+// ============ COMMAND: TRENDING ============
 cmd({
-    pattern: "durl",
-    alias: ["downloadurl", "dlink"],
-    react: "📌",
-    desc: "Download movie directly from URL",
+    pattern: "trending",
+    alias: ["popular", "top"],
+    react: "🔥",
+    desc: "Show trending movies",
     category: "download"
-}, async (client, message, m, { from, q, sender, reply }) => {
-    if (!q) {
-        return reply(`📌 *Direct Download by URL*
-
-*Usage:*
-• durl movie_url
-• downloadurl movie_url
-
-*Example:*
-• durl https://cinesubz.com/movie/captain-america-2011
-
-*You can also specify quality:*
-• durl url 1080p`);
-    }
-
+}, async (client, message, m, { from, reply }) => {
     await client.sendMessage(from, { 
-        react: { text: "⏳", key: m.key } 
+        react: { text: "🔥", key: m.key } 
     });
 
-    const parts = q.trim().split(/\s+/);
-    const url = parts[0];
-    const quality = parts[1] || '1080p';
+    const trending = [
+        "Harry Potter and the Philosopher's Stone",
+        "Avatar",
+        "Inception",
+        "The Dark Knight",
+        "Interstellar",
+        "Avengers: Endgame",
+        "The Lion King",
+        "Frozen",
+        "Captain America",
+        "Spider-Man"
+    ];
 
-    if (!url.startsWith('http')) {
-        return reply(`❌ *Invalid URL!*\nPlease provide a valid CineSubz URL.`);
-    }
+    let msg = `🔥 *Trending Movies*\n━━━━━━━━━━━━━━━━\n\n`;
+    
+    trending.forEach((movie, i) => {
+        msg += `*${i+1}.* ${movie}\n`;
+    });
+    
+    msg += `\n━━━━━━━━━━━━━━━━\n`;
+    msg += `📌 *Type: download movie_name*\n`;
+    msg += `© POWERED BY KAWSHALA-MD`;
 
-    reply(`📥 *Downloading...*`);
+    await client.sendMessage(from, { text: msg }, { quoted: m });
+});
 
-    const result = await downloadAndSendMovie(
-        client, 
-        from, 
-        url, 
-        quality,
-        m
-    );
+// ============ COMMAND: CLEAN TEMP ============
+cmd({
+    pattern: "cleantemp",
+    alias: ["clearcache", "deletetemp"],
+    react: "🧹",
+    desc: "Clean temporary downloaded files",
+    category: "utility"
+}, async (client, message, m, { from, reply }) => {
+    await client.sendMessage(from, { 
+        react: { text: "🧹", key: m.key } 
+    });
 
-    if (!result.success) {
-        reply(`❌ *Download failed:* ${result.message}`);
+    try {
+        const tempDir = path.join(__dirname, 'temp');
+        if (!fs.existsSync(tempDir)) {
+            return reply(`🧹 *No temporary files found*`);
+        }
+
+        const files = fs.readdirSync(tempDir);
+        let deletedCount = 0;
+        let totalSize = 0;
+
+        for (const file of files) {
+            const filePath = path.join(tempDir, file);
+            if (fs.statSync(filePath).isFile()) {
+                const size = fs.statSync(filePath).size;
+                totalSize += size;
+                fs.unlinkSync(filePath);
+                deletedCount++;
+            }
+        }
+
+        reply(`🧹 *Cleanup Complete*\n━━━━━━━━━━━━━━━━\n✅ Files Deleted: ${deletedCount}\n💾 Space Freed: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
+    } catch (error) {
+        console.error("Clean error:", error);
+        reply(`❌ *Error cleaning temp files:* ${error.message}`);
     }
 });
 
 // ============ AUTO CLEANUP ============
 setInterval(() => {
     const now = Date.now();
-    const timeout = 5 * 60 * 1000; // 5 minutes
+    const timeout = 5 * 60 * 1000;
     
     for (const sender in pendingSearch) {
         if (now - pendingSearch[sender].timestamp > timeout) {
@@ -429,15 +503,26 @@ setInterval(() => {
         }
     }
     
-    for (const sender in pendingDownload) {
-        if (now - pendingDownload[sender].timestamp > timeout) {
-            delete pendingDownload[sender];
+    // Clean temp files older than 1 hour
+    try {
+        const tempDir = path.join(__dirname, 'temp');
+        if (fs.existsSync(tempDir)) {
+            const files = fs.readdirSync(tempDir);
+            for (const file of files) {
+                const filePath = path.join(tempDir, file);
+                const stats = fs.statSync(filePath);
+                const age = (now - stats.mtimeMs) / (1000 * 60);
+                if (age > 60) { // Older than 1 hour
+                    fs.unlinkSync(filePath);
+                }
+            }
         }
-    }
-}, 2 * 60 * 1000);
+    } catch (e) {}
+}, 5 * 60 * 1000);
 
 // ============ EXPORT ============
 module.exports = { 
     pendingSearch, 
-    pendingDownload 
+    pendingQuality,
+    downloadAndSendMovie
 };
