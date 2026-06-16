@@ -37,6 +37,7 @@
     "@vreden/youtube_scraper": "^1.2.9",
     "sadaslk-dlcore": "^1.0.0",
     "abir-photo360-apis": "^1.0.2",
-    "puppeteer": "^25.1.0"
+    "puppeteer": "^25.1.0",
+    "cinesubz-scraper": "^1.1.0"
   }
 }
