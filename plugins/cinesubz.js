@@ -245,7 +245,7 @@ async function getDownloadLinks(movieUrl) {
 
 // ========== MAIN COMMAND ==========
 cmd({
-  pattern: "movie",
+  pattern: "cs",
   alias: ["cinesubz", "films", "cinema"],
   react: "🎬",
   desc: "Cinesubz වෙතින් චිත්‍රපට සොයා බාගන්න",
