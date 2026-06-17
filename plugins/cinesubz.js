@@ -6,7 +6,7 @@ let activeSearches = {};
 
 module.exports = {
     name: 'cinesubz',
-    alias: ['movie', 'down'],
+    alias: ['movie1', 'down'],
     category: 'download',
     desc: 'Search and download movies from CineSubz',
     async execute(Client, message, args, commandName) {
