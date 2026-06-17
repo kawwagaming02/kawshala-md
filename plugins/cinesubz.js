@@ -3,79 +3,72 @@ const { searchCineSubz, scrapeCineSubz, scrapeCineSubzServerLink } = require('ci
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const cheerio = require('cheerio');
+const { pipeline } = require('stream');
+const { promisify } = require('util');
+const streamPipeline = promisify(pipeline);
 
 // ============ SESSION STORAGE ============
 const pendingSearch = {};
 
-// ============ IMPROVED LINK EXTRACTOR ============
-async function extractDirectLink(linkUrl) {
+// ============ GET REAL DOWNLOAD URL ============
+async function getRealDownloadUrl(url) {
     try {
-        console.log(`🔍 Extracting link from: ${linkUrl}`);
-        
-        // Method 1: Try with cinesubz-scraper
+        console.log(`🔍 Getting real URL from: ${url}`);
+
+        // Method 1: Try with scrapeCineSubzServerLink
         try {
-            const directLink = await scrapeCineSubzServerLink(linkUrl);
+            const directLink = await scrapeCineSubzServerLink(url);
             if (directLink && directLink.startsWith('http') && !directLink.includes('undefined')) {
-                console.log(`✅ Found via scraper: ${directLink}`);
-                return directLink;
+                // Check if it's a video file
+                if (directLink.match(/\.(mp4|mkv|avi|mov)$/i) || directLink.includes('pixeldrain.com/api/file')) {
+                    console.log(`✅ Found video link: ${directLink}`);
+                    return directLink;
+                }
             }
         } catch (e) {
-            console.log('⚠️ Scraper failed, trying other methods...');
+            console.log('⚠️ scrapeCineSubzServerLink failed');
         }
 
-        // Method 2: Try with axios + cheerio
+        // Method 2: Follow redirects and check content-type
         try {
-            const response = await axios.get(linkUrl, {
+            const response = await axios.get(url, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
-                timeout: 30000
+                maxRedirects: 5,
+                timeout: 30000,
+                validateStatus: () => true
             });
 
-            const $ = cheerio.load(response.data);
-            
-            // Find download links
-            const links = [];
-            
-            // Check all links
-            $('a').each((i, el) => {
-                const href = $(el).attr('href');
-                const text = $(el).text().toLowerCase();
-                if (href && href.startsWith('http')) {
-                    if (text.includes('download') || 
-                        text.includes('direct') ||
-                        text.includes('server') ||
-                        href.includes('download') ||
-                        href.includes('pixeldrain') ||
-                        href.includes('drive.google') ||
-                        href.includes('mega.nz') ||
-                        href.includes('mediafire') ||
-                        href.includes('terabox') ||
-                        href.includes('.mp4') ||
-                        href.includes('.mkv')) {
-                        links.push(href);
-                    }
+            // Check if it's a video file
+            const contentType = response.headers['content-type'] || '';
+            const contentLength = response.headers['content-length'] || 0;
+
+            console.log(`📊 Content-Type: ${contentType}`);
+            console.log(`📊 Content-Length: ${contentLength}`);
+
+            // If it's a video file
+            if (contentType.includes('video') || contentType.includes('octet-stream')) {
+                if (contentLength > 1000000) { // > 1MB
+                    console.log(`✅ Found video with content-type: ${contentType}`);
+                    return url;
                 }
-            });
-
-            // Check specific selectors
-            $('.download-btn a, .btn-download a, .direct-download a, .download-link a, .server-link a').each((i, el) => {
-                const href = $(el).attr('href');
-                if (href && href.startsWith('http')) {
-                    links.push(href);
-                }
-            });
-
-            if (links.length > 0) {
-                console.log(`✅ Found via axios: ${links[0]}`);
-                return links[0];
             }
+
+            // Check if it's a redirect
+            if (response.status === 302 || response.status === 301) {
+                const redirectUrl = response.headers.location;
+                if (redirectUrl) {
+                    console.log(`🔄 Redirecting to: ${redirectUrl}`);
+                    return await getRealDownloadUrl(redirectUrl);
+                }
+            }
+
         } catch (e) {
-            console.log('⚠️ Axios failed:', e.message);
+            console.log('⚠️ Axios check failed:', e.message);
         }
 
-        // Method 3: Try with puppeteer (if available)
+        // Method 3: Try with puppeteer
         try {
             const puppeteer = require('puppeteer');
             const browser = await puppeteer.launch({ 
@@ -83,65 +76,77 @@ async function extractDirectLink(linkUrl) {
                 args: ['--no-sandbox', '--disable-setuid-sandbox'] 
             });
             const page = await browser.newPage();
-            await page.goto(linkUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+            
+            // Set user agent
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+            
+            // Go to page
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
-            // Wait for download button
-            await page.waitForSelector('.download-btn a, .btn-download a, .direct-download a', { timeout: 10000 }).catch(() => {});
-
-            const links = await page.evaluate(() => {
-                const results = [];
-                
-                // Check all links
-                document.querySelectorAll('a').forEach(link => {
-                    const href = link.href;
-                    const text = link.textContent.toLowerCase();
-                    if (href && href.startsWith('http')) {
-                        if (text.includes('download') || 
-                            text.includes('direct') ||
-                            href.includes('download') ||
-                            href.includes('pixeldrain') ||
-                            href.includes('drive.google') ||
-                            href.includes('mega.nz') ||
-                            href.includes('.mp4') ||
-                            href.includes('.mkv')) {
-                            results.push(href);
-                        }
-                    }
-                });
+            // Check for video sources
+            const videoUrl = await page.evaluate(() => {
+                // Check video elements
+                const video = document.querySelector('video');
+                if (video && video.src) return video.src;
 
                 // Check video sources
-                document.querySelectorAll('video source').forEach(source => {
-                    if (source.src && source.src.startsWith('http')) {
-                        results.push(source.src);
-                    }
-                });
+                const sources = document.querySelectorAll('video source');
+                for (const source of sources) {
+                    if (source.src) return source.src;
+                }
 
-                return results;
+                // Check download links
+                const links = document.querySelectorAll('a[href*="download"], a[href*=".mp4"], a[href*=".mkv"]');
+                for (const link of links) {
+                    if (link.href && link.href.startsWith('http')) {
+                        return link.href;
+                    }
+                }
+
+                return null;
             });
 
             await browser.close();
 
-            if (links && links.length > 0) {
-                console.log(`✅ Found via puppeteer: ${links[0]}`);
-                return links[0];
+            if (videoUrl) {
+                console.log(`✅ Found video via puppeteer: ${videoUrl}`);
+                return videoUrl;
             }
+
         } catch (e) {
             console.log('⚠️ Puppeteer failed:', e.message);
         }
 
-        // Method 4: Return original URL as fallback
-        console.log('⚠️ No direct link found, using original');
-        return linkUrl;
+        // Method 4: Check if URL already ends with video extension
+        if (url.match(/\.(mp4|mkv|avi|mov|wmv|flv)$/i)) {
+            console.log(`✅ URL is already a video file: ${url}`);
+            return url;
+        }
+
+        console.log('❌ Could not find real download URL');
+        return null;
 
     } catch (error) {
-        console.error('❌ Error extracting link:', error);
-        return linkUrl;
+        console.error('❌ Error getting real URL:', error);
+        return null;
     }
 }
 
 // ============ DOWNLOAD AND SEND FILE ============
-async function downloadAndSendFile(client, from, downloadUrl, fileName, caption, m) {
+async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption, m) {
     try {
+        // Get real download URL
+        const realUrl = await getRealDownloadUrl(downloadUrl);
+        
+        if (!realUrl) {
+            return { 
+                success: false, 
+                message: "Could not find valid download URL" 
+            };
+        }
+
+        console.log(`✅ Real URL: ${realUrl}`);
+
         // Create temp directory
         const tempDir = path.join(__dirname, 'temp');
         if (!fs.existsSync(tempDir)) {
@@ -150,28 +155,50 @@ async function downloadAndSendFile(client, from, downloadUrl, fileName, caption,
 
         const filePath = path.join(tempDir, fileName);
         
-        console.log(`📥 Downloading: ${fileName}`);
-        console.log(`📥 From: ${downloadUrl}`);
-
         // Send progress message
         await client.sendMessage(from, {
-            text: `📥 *Downloading Movie File*\n━━━━━━━━━━━━━━━━\n⏳ Please wait... This may take a few minutes.`
+            text: `📥 *Downloading Movie*\n━━━━━━━━━━━━━━━━\n🎬 ${fileName.replace('.mp4', '')}\n⏳ Please wait... This may take a few minutes.`
         }, { quoted: m });
 
-        // Download the file
+        // Download with progress
         const response = await axios({
             method: 'GET',
-            url: downloadUrl,
+            url: realUrl,
             responseType: 'stream',
             timeout: 600000,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': '*/*',
+                'Accept': 'video/mp4,video/*,*/*',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive'
-            }
+            },
+            maxRedirects: 5
         });
 
+        // Check content type
+        const contentType = response.headers['content-type'] || '';
+        const contentLength = response.headers['content-length'] || 0;
+
+        console.log(`📊 Content-Type: ${contentType}`);
+        console.log(`📊 Content-Length: ${contentLength}`);
+
+        // Check if it's a video file
+        if (!contentType.includes('video') && !contentType.includes('octet-stream')) {
+            return {
+                success: false,
+                message: `Invalid content type: ${contentType}. This is not a video file.`
+            };
+        }
+
+        // Check file size
+        if (contentLength > 0 && contentLength < 1000000) {
+            return {
+                success: false,
+                message: `File too small (${(contentLength/1024).toFixed(1)} KB). This is not a valid video file.`
+            };
+        }
+
+        // Download
         const writer = fs.createWriteStream(filePath);
         response.data.pipe(writer);
 
@@ -182,6 +209,15 @@ async function downloadAndSendFile(client, from, downloadUrl, fileName, caption,
                     const fileSizeMB = stats.size / (1024 * 1024);
                     
                     console.log(`✅ Download complete: ${fileSizeMB.toFixed(2)} MB`);
+
+                    if (fileSizeMB < 1) {
+                        fs.unlinkSync(filePath);
+                        resolve({ 
+                            success: false, 
+                            message: `File too small (${fileSizeMB.toFixed(2)} MB). Not a valid video.` 
+                        });
+                        return;
+                    }
 
                     if (fileSizeMB > 2000) {
                         fs.unlinkSync(filePath);
@@ -205,7 +241,7 @@ async function downloadAndSendFile(client, from, downloadUrl, fileName, caption,
                     
                     resolve({ 
                         success: true, 
-                        message: "File sent successfully!",
+                        message: "Movie sent successfully!",
                         size: fileSizeMB.toFixed(2)
                     });
 
@@ -230,8 +266,8 @@ async function downloadAndSendFile(client, from, downloadUrl, fileName, caption,
     }
 }
 
-// ============ DOWNLOAD MOVIE FILE FUNCTION ============
-async function downloadMovieFile(client, from, movie, quality, m, reply) {
+// ============ DOWNLOAD MOVIE FUNCTION ============
+async function downloadMovie(client, from, movie, quality, m, reply) {
     try {
         // Get movie details
         const details = await scrapeCineSubz(movie.url || movie.movieUrl);
@@ -239,13 +275,6 @@ async function downloadMovieFile(client, from, movie, quality, m, reply) {
         if (!details.downloadLinks || details.downloadLinks.length === 0) {
             return reply(`❌ *No download links found for this movie*`);
         }
-
-        // Log all available links for debugging
-        console.log(`📊 Available links for ${details.title}:`);
-        details.downloadLinks.forEach((link, i) => {
-            console.log(`  ${i+1}. ${link.quality} - ${link.size}`);
-            console.log(`     URL: ${link.url || link.link || 'N/A'}`);
-        });
 
         // Find quality
         let selectedLink = null;
@@ -273,70 +302,32 @@ async function downloadMovieFile(client, from, movie, quality, m, reply) {
             selectedLink = details.downloadLinks[0];
         }
 
-        // Get download URL with multiple fallbacks
-        let downloadUrl = null;
+        // Get download URL
+        let downloadUrl = selectedLink.url || selectedLink.link || selectedLink.href;
         
-        // Try different properties
-        if (selectedLink.directUrl) downloadUrl = selectedLink.directUrl;
-        else if (selectedLink.url) downloadUrl = selectedLink.url;
-        else if (selectedLink.link) downloadUrl = selectedLink.link;
-        else if (selectedLink.href) downloadUrl = selectedLink.href;
-        else if (selectedLink.downloadLink) downloadUrl = selectedLink.downloadLink;
-
         console.log(`📥 Selected link: ${downloadUrl}`);
 
         if (!downloadUrl || downloadUrl === 'undefined' || downloadUrl === 'null') {
             return reply(`❌ *Could not get download URL*\n\nTry another quality or movie.`);
         }
 
-        // Extract direct link
-        let directUrl = await extractDirectLink(downloadUrl);
-        
-        if (!directUrl || directUrl === 'undefined' || directUrl === 'null') {
-            directUrl = downloadUrl;
-        }
-
-        console.log(`✅ Final URL: ${directUrl}`);
-
         // Prepare file name
         const cleanTitle = details.title || movie.title || 'Movie';
         const cleanQuality = selectedLink.quality || quality;
         const fileName = `${cleanTitle} - ${cleanQuality}.mp4`.replace(/[^\w\s.-]/gi, '');
 
-        // Send progress message
-        await client.sendMessage(from, {
-            text: `📥 *Downloading*\n━━━━━━━━━━━━━━━━\n🎬 ${cleanTitle}\n📊 ${cleanQuality}\n💾 ${selectedLink.size || 'Unknown'}\n\n⏳ Please wait... This may take a few minutes.`
-        }, { quoted: m });
-
         // Download and send
-        const result = await downloadAndSendFile(
+        const result = await downloadAndSendMovie(
             client,
             from,
-            directUrl,
+            downloadUrl,
             fileName,
             `🎬 *${cleanTitle}*\n📊 ${cleanQuality}\n💾 ${selectedLink.size || 'N/A'}\n\n*Powered by Zanta Bot*`,
             m
         );
 
         if (!result.success) {
-            // Try with original URL if direct failed
-            if (directUrl !== downloadUrl) {
-                console.log(`🔄 Retrying with original URL: ${downloadUrl}`);
-                const retryResult = await downloadAndSendFile(
-                    client,
-                    from,
-                    downloadUrl,
-                    fileName,
-                    `🎬 *${cleanTitle}*\n📊 ${cleanQuality}\n💾 ${selectedLink.size || 'N/A'}\n\n*Powered by Zanta Bot*`,
-                    m
-                );
-                
-                if (!retryResult.success) {
-                    reply(`❌ *Download Failed*\n━━━━━━━━━━━━━━━━\n${retryResult.message}`);
-                }
-            } else {
-                reply(`❌ *Download Failed*\n━━━━━━━━━━━━━━━━\n${result.message}`);
-            }
+            reply(`❌ *Download Failed*\n━━━━━━━━━━━━━━━━\n${result.message}`);
         }
 
     } catch (error) {
@@ -364,18 +355,13 @@ cmd({
 *උදාහරණ:*
 • cs harry potter
 • movie avatar
-• cs captain america 720p
-
-*Quality එකත් දාන්න පුළුවන්:*
-• cs harry potter 1080p
-• cs avatar 720p`);
+• cs captain america 720p`);
     }
 
     await client.sendMessage(from, { 
         react: { text: "⏳", key: m.key } 
     });
 
-    // Parse quality
     const parts = q.trim().split(/\s+/);
     let movieName = q;
     let quality = '720p';
@@ -421,7 +407,7 @@ cmd({
         }
 
         const movie = results[0];
-        await downloadMovieFile(client, from, movie, quality, m, reply);
+        await downloadMovie(client, from, movie, quality, m, reply);
 
     } catch (error) {
         console.error("Download error:", error);
@@ -445,7 +431,7 @@ cmd({
     const { results, quality } = pendingSearch[sender];
     const selected = results[index];
 
-    await downloadMovieFile(client, from, selected, quality, m, reply);
+    await downloadMovie(client, from, selected, quality, m, reply);
     
     delete pendingSearch[sender];
 });
@@ -478,7 +464,4 @@ setInterval(() => {
     } catch (e) {}
 }, 5 * 60 * 1000);
 
-// ============ EXPORT ============
-module.exports = { 
-    pendingSearch
-};
+module.exports = { pendingSearch };
