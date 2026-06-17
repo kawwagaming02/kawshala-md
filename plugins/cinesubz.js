@@ -3,35 +3,30 @@ const { searchCineSubz, scrapeCineSubz, scrapeCineSubzServerLink } = require('ci
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { pipeline } = require('stream');
-const { promisify } = require('util');
-const streamPipeline = promisify(pipeline);
 
 // ============ SESSION STORAGE ============
 const pendingSearch = {};
+const downloadProgress = {};
 
-// ============ GET REAL DOWNLOAD URL ============
-async function getRealDownloadUrl(url) {
+// ============ GET DIRECT DOWNLOAD URL ============
+async function getDirectDownloadUrl(linkUrl) {
     try {
-        console.log(`🔍 Getting real URL from: ${url}`);
-
-        // Method 1: Try with scrapeCineSubzServerLink
+        console.log(`🔍 Getting direct URL from: ${linkUrl}`);
+        
+        // Method 1: Try with cinesubz-scraper
         try {
-            const directLink = await scrapeCineSubzServerLink(url);
+            const directLink = await scrapeCineSubzServerLink(linkUrl);
             if (directLink && directLink.startsWith('http') && !directLink.includes('undefined')) {
-                // Check if it's a video file
-                if (directLink.match(/\.(mp4|mkv|avi|mov)$/i) || directLink.includes('pixeldrain.com/api/file')) {
-                    console.log(`✅ Found video link: ${directLink}`);
-                    return directLink;
-                }
+                console.log(`✅ Found via scraper: ${directLink}`);
+                return directLink;
             }
         } catch (e) {
-            console.log('⚠️ scrapeCineSubzServerLink failed');
+            console.log('⚠️ Scraper failed');
         }
 
-        // Method 2: Follow redirects and check content-type
+        // Method 2: Follow redirects
         try {
-            const response = await axios.get(url, {
+            const response = await axios.get(linkUrl, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
@@ -40,112 +35,48 @@ async function getRealDownloadUrl(url) {
                 validateStatus: () => true
             });
 
-            // Check if it's a video file
-            const contentType = response.headers['content-type'] || '';
-            const contentLength = response.headers['content-length'] || 0;
-
-            console.log(`📊 Content-Type: ${contentType}`);
-            console.log(`📊 Content-Length: ${contentLength}`);
-
-            // If it's a video file
-            if (contentType.includes('video') || contentType.includes('octet-stream')) {
-                if (contentLength > 1000000) { // > 1MB
-                    console.log(`✅ Found video with content-type: ${contentType}`);
-                    return url;
-                }
-            }
-
-            // Check if it's a redirect
+            // Check if redirect
             if (response.status === 302 || response.status === 301) {
                 const redirectUrl = response.headers.location;
                 if (redirectUrl) {
-                    console.log(`🔄 Redirecting to: ${redirectUrl}`);
-                    return await getRealDownloadUrl(redirectUrl);
+                    console.log(`🔄 Redirect to: ${redirectUrl}`);
+                    return await getDirectDownloadUrl(redirectUrl);
                 }
             }
 
-        } catch (e) {
-            console.log('⚠️ Axios check failed:', e.message);
-        }
-
-        // Method 3: Try with puppeteer
-        try {
-            const puppeteer = require('puppeteer');
-            const browser = await puppeteer.launch({ 
-                headless: true, 
-                args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-            });
-            const page = await browser.newPage();
-            
-            // Set user agent
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-            
-            // Go to page
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-
-            // Check for video sources
-            const videoUrl = await page.evaluate(() => {
-                // Check video elements
-                const video = document.querySelector('video');
-                if (video && video.src) return video.src;
-
-                // Check video sources
-                const sources = document.querySelectorAll('video source');
-                for (const source of sources) {
-                    if (source.src) return source.src;
-                }
-
-                // Check download links
-                const links = document.querySelectorAll('a[href*="download"], a[href*=".mp4"], a[href*=".mkv"]');
-                for (const link of links) {
-                    if (link.href && link.href.startsWith('http')) {
-                        return link.href;
-                    }
-                }
-
-                return null;
-            });
-
-            await browser.close();
-
-            if (videoUrl) {
-                console.log(`✅ Found video via puppeteer: ${videoUrl}`);
-                return videoUrl;
+            // Check content-type
+            const contentType = response.headers['content-type'] || '';
+            if (contentType.includes('video') || contentType.includes('octet-stream')) {
+                console.log(`✅ Found video: ${linkUrl}`);
+                return linkUrl;
             }
 
         } catch (e) {
-            console.log('⚠️ Puppeteer failed:', e.message);
+            console.log('⚠️ Redirect check failed');
         }
 
-        // Method 4: Check if URL already ends with video extension
-        if (url.match(/\.(mp4|mkv|avi|mov|wmv|flv)$/i)) {
-            console.log(`✅ URL is already a video file: ${url}`);
-            return url;
-        }
-
-        console.log('❌ Could not find real download URL');
-        return null;
+        return linkUrl;
 
     } catch (error) {
-        console.error('❌ Error getting real URL:', error);
-        return null;
+        console.error('❌ Error:', error);
+        return linkUrl;
     }
 }
 
-// ============ DOWNLOAD AND SEND FILE ============
-async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption, m) {
+// ============ DOWNLOAD AND SEND FULL MOVIE ============
+async function downloadFullMovie(client, from, downloadUrl, fileName, caption, m) {
     try {
-        // Get real download URL
-        const realUrl = await getRealDownloadUrl(downloadUrl);
+        // Get direct download URL
+        const directUrl = await getDirectDownloadUrl(downloadUrl);
         
-        if (!realUrl) {
+        if (!directUrl || directUrl === 'undefined') {
             return { 
                 success: false, 
                 message: "Could not find valid download URL" 
             };
         }
 
-        console.log(`✅ Real URL: ${realUrl}`);
+        console.log(`✅ Direct URL: ${directUrl}`);
 
         // Create temp directory
         const tempDir = path.join(__dirname, 'temp');
@@ -154,52 +85,90 @@ async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption
         }
 
         const filePath = path.join(tempDir, fileName);
-        
+
+        // Check if file already exists (resume support)
+        let existingSize = 0;
+        if (fs.existsSync(filePath)) {
+            existingSize = fs.statSync(filePath).size;
+            console.log(`📊 Existing file size: ${(existingSize / (1024 * 1024)).toFixed(2)} MB`);
+        }
+
         // Send progress message
         await client.sendMessage(from, {
-            text: `📥 *Downloading Movie*\n━━━━━━━━━━━━━━━━\n🎬 ${fileName.replace('.mp4', '')}\n⏳ Please wait... This may take a few minutes.`
+            text: `📥 *Downloading Full Movie*\n━━━━━━━━━━━━━━━━\n🎬 ${fileName.replace('.mp4', '')}\n💾 Please wait... This may take 10-15 minutes.\n\n⏳ Starting download...`
         }, { quoted: m });
 
-        // Download with progress
+        // Download with range support (resume)
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'video/mp4,video/*,*/*',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive'
+        };
+
+        if (existingSize > 0) {
+            headers['Range'] = `bytes=${existingSize}-`;
+        }
+
         const response = await axios({
             method: 'GET',
-            url: realUrl,
+            url: directUrl,
             responseType: 'stream',
-            timeout: 600000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'video/mp4,video/*,*/*',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive'
-            },
+            timeout: 900000, // 15 minutes
+            headers: headers,
             maxRedirects: 5
         });
 
         // Check content type
         const contentType = response.headers['content-type'] || '';
         const contentLength = response.headers['content-length'] || 0;
+        const totalSize = contentLength > 0 ? parseInt(contentLength) + existingSize : 0;
 
         console.log(`📊 Content-Type: ${contentType}`);
-        console.log(`📊 Content-Length: ${contentLength}`);
+        console.log(`📊 Total Size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
 
-        // Check if it's a video file
+        // Check if it's a video
         if (!contentType.includes('video') && !contentType.includes('octet-stream')) {
             return {
                 success: false,
-                message: `Invalid content type: ${contentType}. This is not a video file.`
+                message: `Invalid content type: ${contentType}. Not a video file.`
             };
         }
 
         // Check file size
-        if (contentLength > 0 && contentLength < 1000000) {
+        if (totalSize > 0 && totalSize < 1000000) {
             return {
                 success: false,
-                message: `File too small (${(contentLength/1024).toFixed(1)} KB). This is not a valid video file.`
+                message: `File too small (${(totalSize/1024).toFixed(1)} KB). Not a valid video.`
             };
         }
 
-        // Download
-        const writer = fs.createWriteStream(filePath);
+        // Check if file exceeds WhatsApp limit
+        if (totalSize > 2.1 * 1024 * 1024 * 1024) { // 2.1GB
+            return {
+                success: false,
+                message: `File too large (${(totalSize / (1024 * 1024 * 1024)).toFixed(2)} GB). WhatsApp limit is 2GB.`
+            };
+        }
+
+        // Download with progress
+        const writer = fs.createWriteStream(filePath, { flags: existingSize > 0 ? 'a' : 'w' });
+        let downloadedSize = existingSize;
+        let lastUpdate = 0;
+
+        response.data.on('data', (chunk) => {
+            downloadedSize += chunk.length;
+            
+            // Update progress every 10MB
+            if (downloadedSize - lastUpdate > 10 * 1024 * 1024) {
+                lastUpdate = downloadedSize;
+                const progress = totalSize > 0 ? (downloadedSize / totalSize) * 100 : 0;
+                const downloadedMB = (downloadedSize / (1024 * 1024)).toFixed(1);
+                const totalMB = (totalSize / (1024 * 1024)).toFixed(1);
+                console.log(`📥 Progress: ${progress.toFixed(1)}% (${downloadedMB}MB / ${totalMB}MB)`);
+            }
+        });
+
         response.data.pipe(writer);
 
         return new Promise((resolve, reject) => {
@@ -210,11 +179,12 @@ async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption
                     
                     console.log(`✅ Download complete: ${fileSizeMB.toFixed(2)} MB`);
 
-                    if (fileSizeMB < 1) {
+                    // Check if file is valid
+                    if (fileSizeMB < 50) { // Less than 50MB
                         fs.unlinkSync(filePath);
                         resolve({ 
                             success: false, 
-                            message: `File too small (${fileSizeMB.toFixed(2)} MB). Not a valid video.` 
+                            message: `File too small (${fileSizeMB.toFixed(2)} MB). Download may have failed.` 
                         });
                         return;
                     }
@@ -228,6 +198,12 @@ async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption
                         return;
                     }
 
+                    // Send progress update
+                    await client.sendMessage(from, {
+                        text: `📤 *Sending Movie...*\n━━━━━━━━━━━━━━━━\n📊 File Size: ${fileSizeMB.toFixed(2)} MB\n⏳ Uploading to WhatsApp...`
+                    }, { quoted: m });
+
+                    // Send the file
                     await client.sendMessage(from, {
                         document: {
                             url: filePath
@@ -237,11 +213,12 @@ async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption
                         caption: caption
                     }, { quoted: m });
 
+                    // Delete temp file
                     fs.unlinkSync(filePath);
                     
                     resolve({ 
                         success: true, 
-                        message: "Movie sent successfully!",
+                        message: "Full movie sent successfully!",
                         size: fileSizeMB.toFixed(2)
                     });
 
@@ -266,8 +243,8 @@ async function downloadAndSendMovie(client, from, downloadUrl, fileName, caption
     }
 }
 
-// ============ DOWNLOAD MOVIE FUNCTION ============
-async function downloadMovie(client, from, movie, quality, m, reply) {
+// ============ DOWNLOAD MOVIE ============
+async function downloadMovieFile(client, from, movie, quality, m, reply) {
     try {
         // Get movie details
         const details = await scrapeCineSubz(movie.url || movie.movieUrl);
@@ -316,13 +293,13 @@ async function downloadMovie(client, from, movie, quality, m, reply) {
         const cleanQuality = selectedLink.quality || quality;
         const fileName = `${cleanTitle} - ${cleanQuality}.mp4`.replace(/[^\w\s.-]/gi, '');
 
-        // Download and send
-        const result = await downloadAndSendMovie(
+        // Download full movie
+        const result = await downloadFullMovie(
             client,
             from,
             downloadUrl,
             fileName,
-            `🎬 *${cleanTitle}*\n📊 ${cleanQuality}\n💾 ${selectedLink.size || 'N/A'}\n\n*Powered by Zanta Bot*`,
+            `🎬 *${cleanTitle}*\n📊 ${cleanQuality}\n💾 ${selectedLink.size || 'N/A'}\n\n*Full Movie Downloaded*\n*Powered by Zanta Bot*`,
             m
         );
 
@@ -341,12 +318,12 @@ cmd({
     pattern: "cs",
     alias: ["cinesubz", "movie", "film"],
     react: "🎬",
-    desc: "CineSubz එකෙන් චිත්‍රපට File එක බාගන්න",
+    desc: "CineSubz එකෙන් සම්පූර්ණ චිත්‍රපටය බාගන්න",
     category: "download",
     filename: __filename
 }, async (client, message, m, { from, q, sender, reply }) => {
     if (!q) {
-        return reply(`🎬 *CineSubz Movie Downloader*
+        return reply(`🎬 *CineSubz Full Movie Downloader*
 
 *භාවිතය:*
 • cs චිත්‍රපට_නම
@@ -355,7 +332,13 @@ cmd({
 *උදාහරණ:*
 • cs harry potter
 • movie avatar
-• cs captain america 720p`);
+• cs captain america 720p
+
+*Quality එකත් දාන්න පුළුවන්:*
+• cs harry potter 1080p
+• cs avatar 720p
+
+⚠️ *සටහන:* WhatsApp limit එක 2GB නිසා 2GB ට වැඩි files send වෙන්නේ නැහැ.`);
     }
 
     await client.sendMessage(from, { 
@@ -407,7 +390,7 @@ cmd({
         }
 
         const movie = results[0];
-        await downloadMovie(client, from, movie, quality, m, reply);
+        await downloadMovieFile(client, from, movie, quality, m, reply);
 
     } catch (error) {
         console.error("Download error:", error);
@@ -431,7 +414,7 @@ cmd({
     const { results, quality } = pendingSearch[sender];
     const selected = results[index];
 
-    await downloadMovie(client, from, selected, quality, m, reply);
+    await downloadMovieFile(client, from, selected, quality, m, reply);
     
     delete pendingSearch[sender];
 });
@@ -455,7 +438,7 @@ setInterval(() => {
                 const filePath = path.join(tempDir, file);
                 const stats = fs.statSync(filePath);
                 const age = (now - stats.mtimeMs) / (1000 * 60);
-                if (age > 30) {
+                if (age > 60) {
                     fs.unlinkSync(filePath);
                     console.log(`🧹 Deleted old temp file: ${file}`);
                 }
