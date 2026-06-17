@@ -1,5 +1,7 @@
 const { cmd } = require("../command");
-const puppeteer = require("puppeteer");
+const axios = require("axios");
+const cheerio = require("cheerio");
+const puppeteer = require("puppeteer"); // ලින්ක් ඇතුලට යාමට පමණක් පාවිච්චි වේ
 
 const pendingSearch = {};
 const pendingQuality = {};
@@ -19,38 +21,56 @@ function getDirectPixeldrainUrl(url) {
   return `https://pixeldrain.com/api/file/${match[1]}?download`;
 }
 
-// 1. SEARCH FUNCTION FOR CINESUBZ (UPDATED TO .LK)
+// 1. AXIOS හරහා සෙවුම් ක්‍රියාවලිය (වේගවත් සහ සරලයි)
 async function searchMovies(query) {
-  const searchUrl = `https://cinesubz.lk/?s=${encodeURIComponent(query)}`;
-  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
-  const page = await browser.newPage();
-  await page.goto(searchUrl, { waitUntil: "networkidle2", timeout: 30000 });
-  
-  const results = await page.$$eval(".result-item", items =>
-    items.slice(0, 10).map((item, index) => {
-      const a = item.querySelector(".title a");
-      const img = item.querySelector(".thumbnail img");
-      const meta = item.querySelector(".meta")?.textContent || "";
-      const rating = item.querySelector(".rating")?.textContent || "";
-      return {
-        id: index + 1,
-        title: a?.textContent?.trim() || "",
-        movieUrl: a?.href || "",
-        thumb: img?.src || "",
-        language: meta.trim(),
-        quality: rating.trim(),
-        qty: "Movie"
-      };
-    }).filter(m => m.title && m.movieUrl)
-  );
-  await browser.close();
-  return results;
+  try {
+    const searchUrl = `https://cinesubz.lk/?s=${encodeURIComponent(query)}`;
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
+      },
+      timeout: 15000
+    });
+
+    const $ = cheerio.load(data);
+    let results = [];
+
+    // CineSubz search item class එකට අනුව සකසා ඇත
+    $(".result-item").each((index, element) => {
+      const a = $(element).find(".title a");
+      const img = $(element).find(".thumbnail img");
+      const meta = $(element).find(".meta").text() || "";
+      const rating = $(element).find(".rating").text() || "";
+      
+      const title = a.text().trim();
+      const movieUrl = a.attr("href");
+
+      if (title && movieUrl) {
+        results.push({
+          id: index + 1,
+          title: title,
+          movieUrl: movieUrl,
+          thumb: img.attr("src") || "",
+          language: meta.trim(),
+          quality: rating.trim(),
+          qty: "Movie"
+        });
+      }
+    });
+
+    return results.slice(0, 10);
+  } catch (error) {
+    console.error("Search Error:", error);
+    return [];
+  }
 }
 
-// 2. METADATA SCRAPER FOR CINESUBZ
+// 2. METADATA SCRAPER
 async function getMovieMetadata(url) {
-  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   const page = await browser.newPage();
+  await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
   await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
   
   const metadata = await page.evaluate(() => {
@@ -81,10 +101,11 @@ async function getMovieMetadata(url) {
   return metadata;
 }
 
-// 3. PIXELDRAIN LINK EXTRACTOR FROM CINESUBZ
+// 3. PIXELDRAIN LINK EXTRACTOR
 async function getPixeldrainLinks(movieUrl) {
-  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
+  const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   const page = await browser.newPage();
+  await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
   await page.goto(movieUrl, { waitUntil: "networkidle2", timeout: 30000 });
   
   const linksData = await page.evaluate(() => {
@@ -132,7 +153,7 @@ async function getPixeldrainLinks(movieUrl) {
 // --- CMD 1: MOVIE SEARCH ---
 cmd({
   pattern: "cinesub",
-  alias: ["cinesubz", "cs", "cin"], // .cin කමාන්ඩ් එක වැඩ කරන්න මෙතනට ඇතුළත් කළා
+  alias: ["cinesubz", "cs", "cin"],
   react: "🎬",
   desc: "Search and send movies from CineSubz.lk",
   category: "download",
@@ -142,7 +163,7 @@ cmd({
   reply("*🔍 Searching CineSubz database...*");
   
   const searchResults = await searchMovies(q);
-  if (!searchResults.length) return reply("*❌ No movies found on CineSubz!*");
+  if (!searchResults || searchResults.length === 0) return reply("*❌ No movies found on CineSubz!*");
   
   pendingSearch[sender] = { results: searchResults, timestamp: Date.now() };
   let text = "*🎬 CineSubz Search Results:*\n\n";
