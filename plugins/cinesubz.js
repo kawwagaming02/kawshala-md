@@ -210,7 +210,7 @@ async function getDownloadLinks(movieUrl) {
 }
 
 cmd({
-  pattern: "movie",
+  pattern: "cs",
   alias: ["cinesubz", "films", "cinema"],
   react: "🎬",
   desc: "Search and send movies from Cinesubz.lk",
