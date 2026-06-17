@@ -19,9 +19,9 @@ function getDirectPixeldrainUrl(url) {
   return `https://pixeldrain.com/api/file/${match[1]}?download`;
 }
 
-// 1. SEARCH FUNCTION FOR CINESUBZ
+// 1. SEARCH FUNCTION FOR CINESUBZ (UPDATED TO .LK)
 async function searchMovies(query) {
-  const searchUrl = `https://cinesubz.co/?s=${encodeURIComponent(query)}`;
+  const searchUrl = `https://cinesubz.lk/?s=${encodeURIComponent(query)}`;
   const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
   const page = await browser.newPage();
   await page.goto(searchUrl, { waitUntil: "networkidle2", timeout: 30000 });
@@ -60,7 +60,6 @@ async function getMovieMetadata(url) {
     
     let language = "Sinhala Subtitles", duration = "N/A", directors = [], stars = [];
     
-    // Parse the data fields
     document.querySelectorAll(".custom_fields").forEach(cf => {
       const label = cf.querySelector(".clabel")?.textContent.trim();
       const val = cf.querySelector(".cvalue")?.textContent.trim();
@@ -68,7 +67,6 @@ async function getMovieMetadata(url) {
       if (label === "Runtime") duration = val;
     });
 
-    // Cast info
     document.querySelectorAll(".scontent .wp-content p").forEach(p => {
       if (p.textContent.includes("Director")) directors.push(p.textContent.replace("Director:", "").trim());
       if (p.textContent.includes("Cast")) stars.push(p.textContent.replace("Cast:", "").trim());
@@ -89,7 +87,6 @@ async function getPixeldrainLinks(movieUrl) {
   const page = await browser.newPage();
   await page.goto(movieUrl, { waitUntil: "networkidle2", timeout: 30000 });
   
-  // Find all links redirecting to Pixeldrain or intermediate wait pages
   const linksData = await page.evaluate(() => {
     return Array.from(document.querySelectorAll("a[href*='pixeldrain']"))
       .concat(Array.from(document.querySelectorAll(".download-links a")))
@@ -106,22 +103,19 @@ async function getPixeldrainLinks(movieUrl) {
   });
 
   const directLinks = [];
-  // Remove duplicates
   const uniqueLinks = Array.from(new Set(linksData.map(a => a.pageLink)))
     .map(pageLink => linksData.find(a => a.pageLink === pageLink));
 
   for (const l of uniqueLinks) {
     try {
-      // If it's already a clean pixeldrain file link
       if (l.pageLink.includes("pixeldrain.com/u/")) {
         directLinks.push({ link: l.pageLink, quality: normalizeQuality(l.quality), size: "Direct Link" });
         continue;
       }
       
-      // If it's a redirect wait page, process it
       const subPage = await browser.newPage();
       await subPage.goto(l.pageLink, { waitUntil: "networkidle2", timeout: 30000 });
-      await new Promise(r => setTimeout(r, 10000)); // wait for generation
+      await new Promise(r => setTimeout(r, 10000));
       
       const finalUrl = await subPage.$eval("a[href*='pixeldrain.com/u/']", el => el.href).catch(() => null);
       if (finalUrl) {
@@ -135,16 +129,16 @@ async function getPixeldrainLinks(movieUrl) {
   return directLinks;
 }
 
-// --- CMD 1: SEARCH ---
+// --- CMD 1: MOVIE SEARCH ---
 cmd({
-  pattern: "cin",
-  alias: ["cinesubz", "cs"],
+  pattern: "cinesub",
+  alias: ["cinesubz", "cs", "cin"], // .cin කමාන්ඩ් එක වැඩ කරන්න මෙතනට ඇතුළත් කළා
   react: "🎬",
-  desc: "Search and send movies from CineSubz.co",
+  desc: "Search and send movies from CineSubz.lk",
   category: "download",
   filename: __filename
 }, async (danuwa, mek, m, { from, q, sender, reply }) => {
-  if (!q) return reply(`*🎬 CineSubz Search Plugin*\nUsage: .cinesub movie_name\nExample: .cinesub Moana`);
+  if (!q) return reply(`*🎬 CineSubz Search Plugin*\nUsage: .cin movie_name\nExample: .cin harry potter`);
   reply("*🔍 Searching CineSubz database...*");
   
   const searchResults = await searchMovies(q);
@@ -210,7 +204,7 @@ cmd({
       document: { url: directUrl },
       mimetype: "video/mp4",
       fileName: `${movie.metadata.title.substring(0,45)} - ${selectedLink.quality}.mp4`.replace(/[^\w\s.-]/gi,''),
-      caption: `*🎬 ${movie.metadata.title}*\n*📊 Quality:* ${selectedLink.quality}\n\n*Powered by Bot* 🍿`
+      caption: `*🎬 ${movie.metadata.title}*\n*📊 Quality:* ${selectedLink.quality}\n\n*Enjoy your movie! 🍿*`
     }, { quoted: mek });
   } catch (error) {
     console.error("Download Error:", error);
