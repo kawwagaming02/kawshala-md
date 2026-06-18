@@ -4,71 +4,66 @@ const cheerio = require("cheerio");
 
 const pendingBaiscope = {};
 
-// 1. BAISCOPE.LK HTML SCRAPER (100% වැඩ කරයි)
+// 1. RSS FEED හරහා සෙවීම (100% ක්ම බ්ලොක් නොවී ක්‍රියා කරයි)
 async function searchBaiscope(query) {
   try {
-    // API එක වෙනුවට කෙලින්ම වෙබ් අඩවියේ සර්ච් URL එක භාවිත කිරීම
-    const searchUrl = `https://www.baiscope.lk/?s=${encodeURIComponent(query)}`;
-    const { data } = await axios.get(searchUrl, {
+    // Baiscope RSS feed එක භාවිතයෙන් දත්ත ලබා ගැනීම
+    const feedUrl = `https://www.baiscope.lk/feed/?s=${encodeURIComponent(query)}`;
+    const { data } = await axios.get(feedUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/xml, text/xml, */*"
       },
       timeout: 15000
     });
 
-    const $ = cheerio.load(data);
+    const $ = cheerio.load(data, { xmlMode: true });
     let results = [];
 
-    // Baiscope theme එකේ පෝස්ට් ව්‍යුහය අනුව ලිපි වෙන්කර ගැනීම
-    $("article, .post, .entry").each((index, element) => {
-      const titleEl = $(element).find(".entry-title a, .post-title a, h2 a").first();
-      const imgEl = $(element).find("img").first();
-      
-      const title = titleEl.text().trim();
-      const movieUrl = titleEl.attr("href");
+    $("item").each((index, element) => {
+      const title = $(element).find("title").text().trim();
+      const link = $(element).find("link").text().trim();
 
-      if (title && movieUrl) {
+      if (title && link) {
         results.push({
           id: index + 1,
           title: title.replace(/&#8211;/g, "-").replace(/&#8217;/g, "'").replace(/\[සිංහල උපසිරැසි සමඟ\]|\[සිංහල උපසිරසි\]/gi, "").trim(),
-          movieUrl: movieUrl,
-          thumb: imgEl.attr("src") || ""
+          movieUrl: link
         });
       }
     });
 
-    // එකම ලිපිය නැවත පැමිණීම වැළැක්වීම (Remove duplicates)
-    const uniqueResults = Array.from(new Set(results.map(a => a.movieUrl)))
-      .map(url => results.find(a => a.movieUrl === url));
-
-    return uniqueResults.slice(0, 10);
+    return results.slice(0, 10);
   } catch (error) {
-    console.error("Baiscope Scraper Error:", error.message);
+    console.error("Baiscope RSS Error:", error.message);
     return [];
   }
 }
 
-// 2. DETAILED EXTRACTOR
+// 2. ලිපියේ විස්තර සහ සබ්ටයිටල් ලින්ක්ස් ලබා ගැනීම
 async function getBaiscopeDetails(url) {
   try {
     const { data } = await axios.get(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       },
       timeout: 15000
     });
     const $ = cheerio.load(data);
     
+    // ලිපියේ පෝස්ටර් එක හඳුනා ගැනීම
     const thumbnail = $(".entry-content img").first().attr("src") || $(".post-thumbnail img").first().attr("src") || "";
     
+    // කෙටි හැඳින්වීමක් සකසා ගැනීම
     let description = "";
     $(".entry-content p").slice(0, 3).each((i, el) => {
       description += $(el).text().trim() + "\n";
     });
-    if (description.length > 350) description = description.substring(0, 350) + "...";
+    if (description.length > 300) description = description.substring(0, 300) + "...";
 
+    // ඩවුන්ලෝඩ් සහ සබ්ටයිටල් ලින්ක්ස් එකතු කිරීම
     let downloadLinks = [];
-    $(".entry-content a, .download-link a").each((i, el) => {
+    $(".entry-content a").each((i, el) => {
       const href = $(el).attr("href");
       const text = $(el).text().trim();
       
@@ -96,10 +91,10 @@ cmd({
   filename: __filename
 }, async (danuwa, mek, m, { from, q, sender, reply }) => {
   if (!q) return reply(`*🎬 Baiscope Movie Search*\n\nUsage: .bs movie_name\nExample: .bs Harry Potter`);
-  reply("*🔍 Searching Baiscope.lk database...*");
+  reply("*🔍 Searching Baiscope.lk Feed...*");
 
   const results = await searchBaiscope(q);
-  if (!results || results.length === 0) return reply("*❌ No movies or subtitles found on Baiscope.lk for your search!*");
+  if (!results || results.length === 0) return reply("*❌ No movies or subtitles found on Baiscope.lk!*");
 
   pendingBaiscope[sender] = { results, timestamp: Date.now() };
 
@@ -135,11 +130,11 @@ cmd({
       msg += `\n*${i+1}. ${dl.name}*\n🔗 ${dl.link}\n`;
     });
   } else {
-    msg += `*⚠️ Direct links inside post not found. Please click the "Post Link" above to manually get the sub file.*`;
+    msg += `*⚠️ Direct links inside post not found. Please click the "Post Link" above to manually download the subtitle file.*`;
   }
 
-  if (details.thumbnail || selected.thumb) {
-    await danuwa.sendMessage(from, { image: { url: details.thumbnail || selected.thumb }, caption: msg }, { quoted: mek });
+  if (details.thumbnail) {
+    await danuwa.sendMessage(from, { image: { url: details.thumbnail }, caption: msg }, { quoted: mek });
   } else {
     await danuwa.sendMessage(from, { text: msg }, { quoted: mek });
   }
