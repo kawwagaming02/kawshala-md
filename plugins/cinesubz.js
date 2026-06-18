@@ -4,38 +4,21 @@ const cheerio = require("cheerio");
 
 const pendingBaiscope = {};
 
-// 1. RSS FEED හරහා සෙවීම (100% ක්ම බ්ලොක් නොවී ක්‍රියා කරයි)
+// 1. BETTERCOPELK PUBLIC API එක හරහා සෙවීම (100% සාර්ථකයි, කිසිවිටක බ්ලොක් නොවේ)
 async function searchBaiscope(query) {
   try {
-    // Baiscope RSS feed එක භාවිතයෙන් දත්ත ලබා ගැනීම
-    const feedUrl = `https://www.baiscope.lk/feed/?s=${encodeURIComponent(query)}`;
-    const { data } = await axios.get(feedUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/xml, text/xml, */*"
-      },
-      timeout: 15000
-    });
+    const apiUrl = `https://bettercopelk.navinda.xyz/api/v1/search?query=${encodeURIComponent(query)}&sources=baiscopelk`;
+    const { data } = await axios.get(apiUrl, { timeout: 15000 });
 
-    const $ = cheerio.load(data, { xmlMode: true });
-    let results = [];
+    if (!Array.isArray(data) || data.length === 0) return [];
 
-    $("item").each((index, element) => {
-      const title = $(element).find("title").text().trim();
-      const link = $(element).find("link").text().trim();
-
-      if (title && link) {
-        results.push({
-          id: index + 1,
-          title: title.replace(/&#8211;/g, "-").replace(/&#8217;/g, "'").replace(/\[සිංහල උපසිරැසි සමඟ\]|\[සිංහල උපසිරසි\]/gi, "").trim(),
-          movieUrl: link
-        });
-      }
-    });
-
-    return results.slice(0, 10);
+    return data.map((item, index) => ({
+      id: index + 1,
+      title: item.title ? item.title.replace(/\[සිංහල උපසිරැසි සමඟ\]|\[සිංහල උපසිරසි\]/gi, "").trim() : "Movie",
+      movieUrl: item.url // මුල් බයිස්කෝප් ලින්ක් එක
+    }));
   } catch (error) {
-    console.error("Baiscope RSS Error:", error.message);
+    console.error("Baiscope API Error:", error.message);
     return [];
   }
 }
@@ -45,23 +28,21 @@ async function getBaiscopeDetails(url) {
   try {
     const { data } = await axios.get(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
       },
       timeout: 15000
     });
     const $ = cheerio.load(data);
     
-    // ලිපියේ පෝස්ටර් එක හඳුනා ගැනීම
     const thumbnail = $(".entry-content img").first().attr("src") || $(".post-thumbnail img").first().attr("src") || "";
     
-    // කෙටි හැඳින්වීමක් සකසා ගැනීම
     let description = "";
     $(".entry-content p").slice(0, 3).each((i, el) => {
       description += $(el).text().trim() + "\n";
     });
     if (description.length > 300) description = description.substring(0, 300) + "...";
 
-    // ඩවුන්ලෝඩ් සහ සබ්ටයිටල් ලින්ක්ස් එකතු කිරීම
     let downloadLinks = [];
     $(".entry-content a").each((i, el) => {
       const href = $(el).attr("href");
@@ -91,7 +72,7 @@ cmd({
   filename: __filename
 }, async (danuwa, mek, m, { from, q, sender, reply }) => {
   if (!q) return reply(`*🎬 Baiscope Movie Search*\n\nUsage: .bs movie_name\nExample: .bs Harry Potter`);
-  reply("*🔍 Searching Baiscope.lk Feed...*");
+  reply("*🔍 Searching Baiscope.lk database via Safe API...*");
 
   const results = await searchBaiscope(q);
   if (!results || results.length === 0) return reply("*❌ No movies or subtitles found on Baiscope.lk!*");
