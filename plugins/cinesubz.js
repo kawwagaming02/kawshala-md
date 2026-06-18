@@ -141,7 +141,7 @@ async function getPixeldrainLinks(movieUrl) {
 
 // --- CMD 1: MOVIE SEARCH ---
 cmd({
-  pattern: "cinesub",
+  pattern: "cine",
   alias: ["cinesubz", "cs", "cin"],
   react: "🎬",
   desc: "Search and send movies from CineSubz.co",
