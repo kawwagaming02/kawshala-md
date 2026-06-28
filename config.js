@@ -11,5 +11,4 @@ ALIVE_MSG: process.env.ALIVE_MSG || "*Hello👋 KAWSHALA-MD Is Alive Now😍*",
 BOT_OWNER: '94710189823',  // Replace with the owner's phone number
 
 
-
 };
