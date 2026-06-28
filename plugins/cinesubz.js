@@ -1,80 +1,116 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const pino = require('pino');
-const axios = require('axios');
-const cheerio = require('cheerio');
+const { cmd } = require("../command");
+const axios = require("axios");
+const cheerio = require("cheerio");
 
-// Function to scrape Baiscope for movies
-async function searchBaiscopeMovie(query) {
+const pendingBaiscope = {};
+
+// Search Baiscope
+async function searchBaiscope(query) {
     try {
-        const url = `https://baiscope.lk{encodeURIComponent(query)}`;
-        const { data } = await axios.get(url);
-        const $ = cheerio.load(data);
-        
-        let results = [];
-        
-        // Target article posts on Baiscope
-        $('article').each((i, element) => {
-            const title = $(element).find('.entry-title a').text().trim();
-            const link = $(element).find('.entry-title a').attr('href');
-            
-            if (title && link) {
-                results.push({ title, link });
+        const url = `https://baiscope.lk/?s=${encodeURIComponent(query)}`;
+
+        const { data } = await axios.get(url, {
+            timeout: 15000,
+            headers: {
+                "User-Agent": "Mozilla/5.0"
             }
         });
 
-        return results.slice(0, 5); // Return top 5 results
-    } catch (error) {
-        console.error('Error scraping Baiscope:', error);
+        const $ = cheerio.load(data);
+        const results = [];
+
+        $("article").each((i, el) => {
+            const title = $(el).find(".entry-title a").text().trim();
+            const link = $(el).find(".entry-title a").attr("href");
+
+            if (title && link) {
+                results.push({
+                    title,
+                    link
+                });
+            }
+        });
+
+        return results;
+
+    } catch (err) {
+        console.log(err);
         return [];
     }
 }
 
-// Start the WhatsApp Bot
-async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    const sock = makeWASocket({
-        logger: pino({ level: 'silent' }),
-        auth: state
+// Search Command
+cmd({
+    pattern: "baiscope",
+    alias: ["movie", "subtitle"],
+    react: "🎬",
+    desc: "Search movies from Baiscope",
+    category: "search",
+    filename: __filename
+}, async (danuwa, mek, m, { q, sender, reply }) => {
+
+    if (!q)
+        return reply("*🎬 Usage:*\n.baiscope <movie name>");
+
+    reply("*🔍 Searching Baiscope...*");
+
+    const movies = await searchBaiscope(q);
+
+    if (!movies.length)
+        return reply("*❌ No movies found.*");
+
+    pendingBaiscope[sender] = {
+        movies,
+        timestamp: Date.now()
+    };
+
+    let txt = "*🎬 Baiscope Search Results*\n\n";
+
+    movies.forEach((movie, i) => {
+        txt += `*${i + 1}.* ${movie.title}\n`;
     });
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) connectToWhatsApp();
-        } else if (connection === 'open') {
-            console.log('Bot is ready and connected!');
+    txt += `\n*Reply with a number (1-${movies.length}) to get the link.*`;
+
+    reply(txt);
+});
+
+// Selection Command
+cmd({
+    filter: (text, { sender }) =>
+        pendingBaiscope[sender] &&
+        !isNaN(text) &&
+        parseInt(text) > 0 &&
+        parseInt(text) <= pendingBaiscope[sender].movies.length
+
+}, async (danuwa, mek, m, { body, sender, from }) => {
+
+    const index = Number(body) - 1;
+
+    const movie = pendingBaiscope[sender].movies[index];
+
+    delete pendingBaiscope[sender];
+
+    let msg = `🎬 *${movie.title}*\n\n`;
+    msg += `🔗 ${movie.link}`;
+
+    await danuwa.sendMessage(from, {
+        text: msg
+    }, {
+        quoted: mek
+    });
+
+});
+
+// Auto clear cache
+setInterval(() => {
+
+    const now = Date.now();
+
+    for (const id in pendingBaiscope) {
+        if (now - pendingBaiscope[id].timestamp > 10 * 60 * 1000) {
+            delete pendingBaiscope[id];
         }
-    });
+    }
 
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-
-        const senderNumber = msg.key.remoteJid;
-        const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-
-        // Bot command to search movies
-        if (messageText.startsWith('!movie ')) {
-            const query = messageText.replace('!movie ', '').trim();
-            
-            await sock.sendMessage(senderNumber, { text: `🔍 Searching for "${query}" on Baiscope...` });
-
-            const movieResults = await searchBaiscopeMovie(query);
-
-            if (movieResults.length > 0) {
-                let replyText = "🎬 *Movie Results from Baiscope:* \n\n";
-                movieResults.forEach((movie, index) => {
-                    replyText += `${index + 1}. *${movie.title}*\n🔗 Link: ${movie.link}\n\n`;
-                });
-                await sock.sendMessage(senderNumber, { text: replyText });
-            } else {
-                await sock.sendMessage(senderNumber, { text: "⚠️ No movie subtitles found matching your query on Baiscope." });
-            }
-        }
-    });
-}
-
-connectToWhatsApp();
+}, 5 * 60 * 1000);
