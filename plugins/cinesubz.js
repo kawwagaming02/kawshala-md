@@ -1,116 +1,140 @@
 const { cmd } = require("../command");
-const axios = require("axios");
-const cheerio = require("cheerio");
+const puppeteer = require("puppeteer");
 
 const pendingBaiscope = {};
 
-// Search Baiscope
 async function searchBaiscope(query) {
+    let browser;
+
     try {
-        const url = `https://baiscope.lk/?s=${encodeURIComponent(query)}`;
-
-        const { data } = await axios.get(url, {
-            timeout: 15000,
-            headers: {
-                "User-Agent": "Mozilla/5.0"
-            }
+        browser = await puppeteer.launch({
+            headless: true,
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
         });
 
-        const $ = cheerio.load(data);
-        const results = [];
+        const page = await browser.newPage();
 
-        $("article").each((i, el) => {
-            const title = $(el).find(".entry-title a").text().trim();
-            const link = $(el).find(".entry-title a").attr("href");
+        await page.setUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36"
+        );
 
-            if (title && link) {
-                results.push({
-                    title,
-                    link
-                });
+        await page.goto(
+            `https://baiscope.lk/?s=${encodeURIComponent(query)}`,
+            {
+                waitUntil: "networkidle2",
+                timeout: 60000
             }
+        );
+
+        const movies = await page.evaluate(() => {
+
+            const results = [];
+
+            document.querySelectorAll("article").forEach(article => {
+
+                const a = article.querySelector("h2 a, .entry-title a");
+
+                if (a) {
+                    results.push({
+                        title: a.innerText.trim(),
+                        link: a.href
+                    });
+                }
+
+            });
+
+            return results;
         });
 
-        return results;
+        await browser.close();
 
-    } catch (err) {
-        console.log(err);
+        return movies;
+
+    } catch (e) {
+
+        if (browser) await browser.close();
+
+        console.log(e);
+
         return [];
     }
 }
 
-// Search Command
 cmd({
     pattern: "baiscope",
-    alias: ["movie", "subtitle"],
+    alias: ["movie"],
     react: "🎬",
     desc: "Search movies from Baiscope",
     category: "search",
     filename: __filename
-}, async (danuwa, mek, m, { q, sender, reply }) => {
+
+}, async (conn, mek, m, { q, sender, reply }) => {
 
     if (!q)
-        return reply("*🎬 Usage:*\n.baiscope <movie name>");
+        return reply("*Example:*\n.baiscope Avatar");
 
-    reply("*🔍 Searching Baiscope...*");
+    await reply("🔍 Searching Baiscope...");
 
     const movies = await searchBaiscope(q);
 
     if (!movies.length)
-        return reply("*❌ No movies found.*");
+        return reply("❌ No movies found.");
 
     pendingBaiscope[sender] = {
         movies,
         timestamp: Date.now()
     };
 
-    let txt = "*🎬 Baiscope Search Results*\n\n";
+    let text = "*🎬 Search Results*\n\n";
 
-    movies.forEach((movie, i) => {
-        txt += `*${i + 1}.* ${movie.title}\n`;
+    movies.forEach((v, i) => {
+        text += `${i + 1}. ${v.title}\n`;
     });
 
-    txt += `\n*Reply with a number (1-${movies.length}) to get the link.*`;
+    text += `\n\nReply with a number (1-${movies.length})`;
 
-    reply(txt);
+    reply(text);
+
 });
 
-// Selection Command
 cmd({
+
     filter: (text, { sender }) =>
         pendingBaiscope[sender] &&
         !isNaN(text) &&
-        parseInt(text) > 0 &&
-        parseInt(text) <= pendingBaiscope[sender].movies.length
+        Number(text) >= 1 &&
+        Number(text) <= pendingBaiscope[sender].movies.length
 
-}, async (danuwa, mek, m, { body, sender, from }) => {
+}, async (conn, mek, m, { body, sender, from }) => {
 
-    const index = Number(body) - 1;
-
-    const movie = pendingBaiscope[sender].movies[index];
+    const movie = pendingBaiscope[sender].movies[Number(body) - 1];
 
     delete pendingBaiscope[sender];
 
-    let msg = `🎬 *${movie.title}*\n\n`;
-    msg += `🔗 ${movie.link}`;
+    await conn.sendMessage(from, {
+        text:
+`🎬 *${movie.title}*
 
-    await danuwa.sendMessage(from, {
-        text: msg
+🔗 ${movie.link}`
     }, {
         quoted: mek
     });
 
 });
 
-// Auto clear cache
 setInterval(() => {
 
     const now = Date.now();
 
     for (const id in pendingBaiscope) {
-        if (now - pendingBaiscope[id].timestamp > 10 * 60 * 1000) {
+
+        if (now - pendingBaiscope[id].timestamp > 600000) {
             delete pendingBaiscope[id];
         }
+
     }
 
-}, 5 * 60 * 1000);
+}, 300000);
