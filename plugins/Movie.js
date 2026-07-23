@@ -110,7 +110,7 @@ async function getPixeldrainLinks(movieUrl) {
 
 cmd({
   pattern: "movie",
-  alias: ["sinhalasub","films","cinema"],
+  alias: ["sinhalasub","ms","cinema"],
   react: "🎬",
   desc: "Search and send movies from Sinhalasub.lk",
   category: "download",
