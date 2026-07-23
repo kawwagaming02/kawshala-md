@@ -1,7 +1,7 @@
 {
   "name": "KAWSHALA-MD",
   "version": "1.0.0",
-  "description": "A Powerfull Whatsapp Bot",
+  "description": "A Powerfullly Whatsapp Bot",
   "main": "index.js",
   "scripts": {
     "start": "pm2 start index.js --deep-monitoring --attach --name KAWSHALA-MD",
